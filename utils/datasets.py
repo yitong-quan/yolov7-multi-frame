@@ -531,7 +531,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     #self.shuffled_vector = np.random.permutation(self.nF) if self.augment else np.arange(self.nF)
     #     return self
 
-    def __getitem__(self, index):
+    def Kin__getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
         hyp = self.hyp
@@ -626,6 +626,108 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
 
+        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+
+    def __getitem__(self, index):
+        index = self.indices[index]  # linear, shuffled, or image_weights
+
+        hyp = self.hyp
+        mosaic = self.mosaic and random.random() < hyp['mosaic']
+        if mosaic:
+            # Load mosaic
+            if random.random() < 0.8:
+                img, labels = load_mosaic(self, index)
+            else:
+                img, labels = load_mosaic9(self, index)
+            shapes = None
+
+            # MixUp https://arxiv.org/pdf/1710.09412.pdf
+            if random.random() < hyp['mixup']:
+                if random.random() < 0.8:
+                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
+                else:
+                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
+                r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
+                img = (img * r + img2 * (1 - r)).astype(np.uint8)
+                labels = np.concatenate((labels, labels2), 0)
+
+        else:
+            # Load image
+            img, (h0, w0), (h, w) = load_image(self, index)
+
+            # Load 3-frame stack
+            frame_offsets = [-2, -1, 0]
+            img_stack = []
+            for offset in frame_offsets:
+                neighbor_idx = min(max(index + offset, 0), len(self.img_files) - 1)
+                img, (h0, w0), (h, w) = load_image(self, neighbor_idx)
+                # Letterbox
+                shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+                # Convert
+                img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+                img_stack.append(img.copy())
+
+            # Stack along channels: [9, H, W]
+            img = np.concatenate(img_stack, axis=0)
+
+            labels = self.labels[index].copy()
+            if labels.size:  # normalized xywh to pixel xyxy format
+                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+
+        # if self.augment:
+        #     # Augment imagespace
+        #     if not mosaic:
+        #         img, labels = random_perspective(img, labels, degrees=hyp['degrees'], translate=hyp['translate'],
+        #                                          scale=hyp['scale'], shear=hyp['shear'], perspective=hyp['perspective'])
+        #
+        #     # img, labels = self.albumentations(img, labels)
+        #
+        #     # Augment colorspace
+        #     augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+        #
+        #     # Apply cutouts
+        #     # if random.random() < 0.9:
+        #     #     labels = cutout(img, labels)
+        #
+        #     if random.random() < hyp['paste_in']:
+        #         sample_labels, sample_images, sample_masks = [], [], []
+        #         while len(sample_labels) < 30:
+        #             sample_labels_, sample_images_, sample_masks_ = load_samples(self, random.randint(0,
+        #                                                                                               len(self.labels) - 1))
+        #             sample_labels += sample_labels_
+        #             sample_images += sample_images_
+        #             sample_masks += sample_masks_
+        #             # print(len(sample_labels))
+        #             if len(sample_labels) == 0:
+        #                 break
+        #         labels = pastein(img, labels, sample_labels, sample_images, sample_masks)
+
+        nL = len(labels)  # number of labels
+        if nL:
+            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
+            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
+            labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
+
+        # if self.augment:
+        #     # flip up-down
+        #     if random.random() < hyp['flipud']:
+        #         img = np.flipud(img)
+        #         if nL:
+        #             labels[:, 2] = 1 - labels[:, 2]
+        #
+        #     # flip left-right
+        #     if random.random() < hyp['fliplr']:
+        #         img = np.fliplr(img)
+        #         if nL:
+        #             labels[:, 1] = 1 - labels[:, 1]
+
+        labels_out = torch.zeros((nL, 6))
+        if nL:
+            labels_out[:, 1:] = torch.from_numpy(labels)
+
+        img = np.ascontiguousarray(img)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
     @staticmethod
