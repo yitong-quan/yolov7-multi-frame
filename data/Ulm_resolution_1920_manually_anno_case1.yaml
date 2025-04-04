@@ -1,0 +1,23 @@
+# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# COCO 2017 dataset http://cocodataset.org by Microsoft
+# Example usage: python train.py --data coco.yaml
+# parent
+# ├── yolov5
+# └── datasets
+#     └── coco  ← downloads here
+
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+# from HDD
+# path: /home/quan/Projects/master_thesis/code_and_figures/master_thesis_jakob_samuel_stoll/data_set/ECP_for_yolov5_training_in_coco_format  # dataset root dir
+# from SSD
+path: '/home/quan/PycharmProjects/LOAF/data/loaf/for_yolov5_train'
+train: /home/quan/PycharmProjects/LOAF/data/loaf/for_yolov5_train/images/train_manually_anno_case1  #train_ECP.txt  # images  # train images (relative to 'path') 118287 images
+val: /home/quan/PycharmProjects/LOAF/data/loaf/for_yolov5_train/images/val_manually_anno_case1  # val_ECP.txt  #images  # val_ECP.txt  # val images (relative to 'path') 5000 images
+# test: test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
+
+# Classes
+nc: 1  # number of classes
+names: ['person']  # class names
+#names: [0, 1, 2,3,4]  # class names
+
