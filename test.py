@@ -102,6 +102,7 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+        if torch.all(targets == 0) : continue
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -219,9 +220,10 @@ def test(data,
         # Plot images
         if plots and batch_i < 3:
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
-            Thread(target=plot_images, args=(img[:,-3:,:,:], targets, paths, f, names), daemon=True).start()
+            # Thread(target=plot_images, args=(img[:,-3:,:,:], targets, paths, f, names), daemon=True).start()
+            Thread(target=plot_images, args=(img[:, [-7, -4, -1], :, :], targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
-            Thread(target=plot_images, args=(img[:,-3:,:,:], output_to_target(out), paths, f, names), daemon=True).start()
+            Thread(target=plot_images, args=(img[:,[-7, -4, -1],:,:], output_to_target(out), paths, f, names), daemon=True).start()
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy

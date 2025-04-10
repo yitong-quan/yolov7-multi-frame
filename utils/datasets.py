@@ -656,7 +656,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             img, (h0, w0), (h, w) = load_image(self, index)
 
             # Load 3-frame stack
-            frame_offsets = [-2, -1, 0]
+            n_frames = 3
+            frame_offsets = [-2, -1, 0]  # [0, 0, 0]  # list(range(1 - n_frames, 1))  #
             img_stack = []
             for offset in frame_offsets:
                 neighbor_idx = min(max(index + offset, 0), len(self.img_files) - 1)
@@ -670,7 +671,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img_stack.append(img.copy())
 
             # Stack along channels: [9, H, W]
-            img = np.concatenate(img_stack, axis=0)
+            img = np.concatenate(img_stack, axis=0)  # [3frames*3, shape[0], shape[1]]
 
             labels = self.labels[index].copy()
             if labels.size:  # normalized xywh to pixel xyxy format
@@ -707,8 +708,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         nL = len(labels)  # number of labels
         if nL:
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
-            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
-            labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
+            labels[:, [2, 4]] /= img.shape[1]  # normalized height 0-1
+            labels[:, [1, 3]] /= img.shape[2]  # normalized width 0-1
 
         # if self.augment:
         #     # flip up-down

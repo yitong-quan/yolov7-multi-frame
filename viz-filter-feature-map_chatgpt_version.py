@@ -155,8 +155,9 @@ def main(args):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     transform = transforms.Compose([transforms.ToPILImage(), transforms.Resize((640, 640)),  # change if needed
         transforms.ToTensor()])
-    img_tensor = transform(img).unsqueeze(0).to(device).half()
-    # img_tensor_repeat = img_tensor.repeat(1, 3, 1, 1)
+    img_tensor = transform(img).unsqueeze(0).to(device) # .half()
+    img_tensor_1Frames = img_tensor.clone().half()
+    img_tensor = img_tensor.repeat(1, 3, 1, 1)
 
     # Register hooks
     feature_maps = []
@@ -165,6 +166,17 @@ def main(args):
     # Forward pass
     with torch.no_grad():
         model(img_tensor)
+
+    comparing = True
+    if comparing:
+        model_1Frames = torch.load('/home/quan/PycharmProjects/yolov7/yolov7-tiny.pt', map_location=device)[
+            'model'].to(device).eval()
+        patch_upsample_forward_only(model_1Frames)
+        feature_maps_1Frames = []
+        register_hooks(model_1Frames, feature_maps_1Frames)
+        # Forward pass
+        with torch.no_grad():
+            model_1Frames(img_tensor_1Frames)
 
     # Visualize
     visualize_feature_maps(feature_maps, args.out)
@@ -175,5 +187,6 @@ if __name__ == "__main__":
     parser.add_argument('--model', required=True, help='Path to YOLOv7 .pt model')
     parser.add_argument('--image', required=True, help='Path to input image')
     parser.add_argument('--out', default='feature_maps', help='Output folder')
+    parser.add_argument('--n-frames', default='1', help='number of frames feed in as a tensor')
     args = parser.parse_args()
     main(args)
