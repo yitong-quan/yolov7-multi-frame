@@ -34,6 +34,8 @@ from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
+if os.environ["DEBUGGING"]:
+    from torchvision.utils import save_image as tv_save_image
 
 logger = logging.getLogger(__name__)
 
@@ -251,17 +253,19 @@ def train(hyp, opt, device, tb_writer=None):
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
-                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
+                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
+                                            n_frames=opt.n_frames)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
     if rank in [-1, 0]:
-        testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
+        testloader = create_dataloader(test_path, imgsz_test, batch_size,  # * 2,
+                                       gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
-                                       pad=0.5, prefix=colorstr('val: '))[0]
+                                       pad=0.5, prefix=colorstr('val: '), n_frames=opt.n_frames)[0]
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -310,6 +314,7 @@ def train(hyp, opt, device, tb_writer=None):
                 f'Logging results to {save_dir}\n'
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -340,7 +345,9 @@ def train(hyp, opt, device, tb_writer=None):
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-            if torch.all(targets == 0) : continue
+            if torch.all(targets == 0) :
+                print('>>> In train, torch.all(targets == 0)')
+                continue
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
@@ -365,6 +372,16 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
+                if os.environ["DEBUGGING"]:
+                    # save unstacked images
+                    train_f_base_name = os.path.splitext(os.path.basename(os.path.basename(paths[0])))[0]
+                    # Split and save unstacked images
+                    imgs_split = imgs[0]
+                    for i_train_f_base_name in range(imgs_split.shape[0]//3):  # current only debug for batch size of 1
+                        img_split = imgs_split[i_train_f_base_name * 3:(i_train_f_base_name + 1) * 3]  # shape [3, 1920, 1920]
+                        save_path = os.path.join('/tmp/debug_folder/train', f"{train_f_base_name}-{imgs_split.shape[0]//3 -i_train_f_base_name-1}.png")
+                        tv_save_image(img_split, save_path)
+                        print(f"Saved: {save_path}")
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
@@ -432,7 +449,8 @@ def train(hyp, opt, device, tb_writer=None):
                                                  wandb_logger=wandb_logger,
                                                  compute_loss=compute_loss,
                                                  is_coco=is_coco,
-                                                 v5_metric=opt.v5_metric)
+                                                 v5_metric=opt.v5_metric,
+                                                 n_frames=opt.n_frames)
 
             # Write
             with open(results_file, 'a') as f:
@@ -512,7 +530,8 @@ def train(hyp, opt, device, tb_writer=None):
                                           save_json=True,
                                           plots=False,
                                           is_coco=is_coco,
-                                          v5_metric=opt.v5_metric)
+                                          v5_metric=opt.v5_metric,
+                                          n_frames=opt.n_frames)
 
         # Strip optimizers
         final = best if best.exists() else last  # final model
@@ -570,7 +589,7 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
-    parser.add_argument('--n-frames', default=3, help='numbers of frames to concatenation as a data sample')
+    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')
     opt = parser.parse_args()
 
     # Set DDP variables
