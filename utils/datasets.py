@@ -63,19 +63,24 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', n_frames=1):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
-                                      augment=augment,  # augment images
+        # dataset = LoadImagesAndLabels(path, imgsz, batch_size,
+        #                               augment=augment,  # augment images
+        #                               hyp=hyp,  # augmentation hyperparameters
+        #                               rect=rect,  # rectangular training
+        #                               cache_images=cache,
+        #                               single_cls=opt.single_cls,
+        #                               stride=int(stride),
+        #                               pad=pad,
+        #                               image_weights=image_weights,
+        #                               prefix=prefix)
+        dataset = PreStackedLoadImagesAndLabels(path, imgsz, batch_size, augment=augment,  # augment images
                                       hyp=hyp,  # augmentation hyperparameters
                                       rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      single_cls=opt.single_cls,
-                                      stride=int(stride),
-                                      pad=pad,
-                                      image_weights=image_weights,
-                                      prefix=prefix)
+                                      cache_images=cache, single_cls=opt.single_cls, stride=int(stride), pad=pad,
+                                      image_weights=image_weights, prefix=prefix, n_frames=n_frames)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -380,6 +385,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 else:
                     raise Exception(f'{prefix}{p} does not exist')
             self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            if 'Ulm/' in str(p):
+                import re
+                self.img_files = sorted(self.img_files,
+                    key=lambda file_path_banana: tuple(map(int, re.findall(r'\d+', os.path.basename(file_path_banana)))))
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
             assert self.img_files, f'{prefix}No images found'
         except Exception as e:
@@ -426,12 +435,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # Sort by aspect ratio
             s = self.shapes  # wh
             ar = s[:, 1] / s[:, 0]  # aspect ratio
-            irect = ar.argsort()
-            self.img_files = [self.img_files[i] for i in irect]
-            self.label_files = [self.label_files[i] for i in irect]
-            self.labels = [self.labels[i] for i in irect]
-            self.shapes = s[irect]  # wh
-            ar = ar[irect]
+            if not np.allclose(ar, ar[0]):  # skip sorting when all values in ar are equal
+                irect = ar.argsort()
+                self.img_files = [self.img_files[i] for i in irect]
+                self.label_files = [self.label_files[i] for i in irect]
+                self.labels = [self.labels[i] for i in irect]
+                self.shapes = s[irect]  # wh
+                ar = ar[irect]
 
             # Set training image shapes
             shapes = [[1, 1]] * nb
@@ -763,6 +773,220 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             l[:, 0] = i  # add target image index for build_targets()
 
         return torch.stack(img4, 0), torch.cat(label4, 0), path4, shapes4
+
+
+def augment_hsv_stacked(img, hgain=0.5, sgain=0.5, vgain=0.5):
+    """
+    Applies the existing augment_hsv() function to each RGB block in a stacked image.
+    The input image is expected to be in HWC format with number of channels a multiple of 3.
+    """
+    H, W, C = img.shape
+    if C % 3 != 0:
+        raise ValueError("The stacked image must have a number of channels that is a multiple of 3")
+    n_frames = C // 3
+    processed_blocks = []
+    for i in range(n_frames):
+        block = img[:, :, i * 3:(i + 1) * 3].copy()
+        # augment_hsv is in-place and expects a 3-channel image in BGR format.
+        # (We assume our image here is still in HWC with channels ordered as RGB?
+        # If necessary, convert between RGB/BGR as your pipeline requires.)
+        augment_hsv(block, hgain=hgain, sgain=sgain, vgain=vgain)
+        processed_blocks.append(block)
+    return np.concatenate(processed_blocks, axis=2)
+
+
+def random_perspective_dynamic(img, targets=(), segments=(), degrees=10, translate=0.1, scale=0.1, shear=10,
+        perspective=0.0, border=(0, 0)):
+    """
+    A thin wrapper over random_perspective to compute a proper dynamic border value.
+    Given an image `img` in HWC format, compute a border_value based on its channel count and call the
+    original random_perspective (assumed to be imported). In this example, we assume random_perspective()
+    accepts a 'border' argument, and we replace the fixed border value with one that matches the number of channels.
+    """
+    # Compute a border value whose length matches the number of channels.
+    border_value = (114,) * img.shape[2]
+    # Now call random_perspective with the given parameters and with the dynamic border.
+    # (For simplicity, we assume the original function honors this and returns (img, targets).)
+    return random_perspective(img, targets, segments, degrees=degrees, translate=translate, scale=scale, shear=shear,
+                              perspective=perspective, border=border_value)
+
+
+# -------------------------------------------
+
+
+class PreStackedLoadImagesAndLabels(LoadImagesAndLabels):
+    """
+    A dataset class that precomputes:
+      1. A stacked image for each sample from n consecutive frames.
+      2. Adjusted labels using the central (offset 0) frame’s letterbox parameters.
+      3. Shape information in the format: ((h0, w0), ((h/h0, w/w0), pad))
+
+    In __getitem__(), if augmentation is enabled, random perspective, augment_hsv (wrapped for stacked images),
+    and random flips (vertical and horizontal) are applied to both the stacked image and the labels.
+    """
+
+    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+            cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', n_frames=3):
+        # Initialize the parent class (this loads file lists, labels, and caches if needed)
+        super().__init__(path, img_size=img_size, batch_size=batch_size, augment=augment, hyp=hyp, rect=rect,
+                         image_weights=image_weights, cache_images=cache_images, single_cls=single_cls, stride=stride,
+                         pad=pad, prefix=prefix)
+        self.n_frames = n_frames
+        print("Precomputing stacked images, adjusted labels, and shape info for samples with nonempty labels...")
+        self.pre_stacked = [None] * len(self.img_files)
+        self.pre_stacked_labels_xyxy = [None] * len(self.img_files)
+        self.pre_stacked_labels_xywh = [None] * len(self.img_files)
+        self.pre_stacked_shapes = [None] * len(self.img_files)
+        # Define frame offsets; for example, for 3 frames: [-2, -1, 0]
+        frame_offsets = list(range(1 - n_frames, 1))
+
+        for i in tqdm(range(len(self.img_files)), desc="Pre-stacking samples"):
+            orig_labels = self.labels[i].copy()  # labels (normalized xywh) for sample i
+            # if orig_labels.size > 0:
+            #     from concurrent.futures import ThreadPoolExecutor
+            #     # Use threading to process each frame offset concurrently.
+            #     def process_offset(offset):
+            #         neighbor_idx = min(max(i + offset, 0), len(self.img_files) - 1)
+            #         img, (h0, w0), (h, w) = load_image(self, neighbor_idx)
+            #         shape = self.batch_shapes[self.batch[i]] if self.rect else self.img_size
+            #         img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            #         return offset, img, ratio, pad, (h0, w0), (h, w)
+            #
+            #     with ThreadPoolExecutor(max_workers=len(frame_offsets)) as executor:
+            #         results = list(executor.map(process_offset, frame_offsets))
+            #     # Sort the results by offset value to maintain ordering.
+            #     results = sorted(results, key=lambda x: x[0])
+            #     stack = []
+            #     base_ratio = base_pad = base_shape = None
+            #     base_shapes = None
+            #     for res in results:
+            #         offset, img, ratio, pad, orig_size, resized_size = res
+            #         if offset == 0:
+            #             base_ratio, base_pad, base_shape = ratio, pad, resized_size
+            #             base_shapes = (
+            #             orig_size, ((resized_size[0] / orig_size[0], resized_size[1] / orig_size[1]), pad))
+            #         # Convert from BGR to RGB then from HWC to CHW.
+            #         img = img[:, :, ::-1].transpose(2, 0, 1)
+            #         stack.append(img.copy())
+            #     # Concatenate along channel dimension: shape -> (n_frames*3, H, W)
+            #     stacked_img = np.concatenate(stack, axis=0)
+            #     self.pre_stacked[i] = stacked_img
+            #
+            #     # Adjust labels using the central frame's parameters.
+            #     adjusted = xywhn2xyxy(orig_labels[:, 1:], base_ratio[0] * base_shape[1], base_ratio[1] * base_shape[0],
+            #                           padw=base_pad[0], padh=base_pad[1])
+            #     new_labels = orig_labels.copy()
+            #     new_labels[:, 1:] = adjusted
+            #     self.pre_stacked_labels[i] = new_labels
+            #     self.pre_stacked_shapes[i] = base_shapes
+            if orig_labels.size > 0:
+                if os.environ["flag_to_profile_time"]:
+                    start = time.perf_counter()
+                stack = []
+                base_ratio, base_pad, base_shape = None, None, None
+                base_shapes = None  # to store ((h0, w0), ((h/h0, w/w0), pad))
+                print(f'stacking for lable file {self.label_files[i]} ...')
+                for offset in frame_offsets:
+                    neighbor_idx = min(max(i + offset, 0), len(self.img_files) - 1)
+                    img, (h0, w0), (h, w) = load_image(self, neighbor_idx)
+                    print(f'\n      loaded image file {self.img_files[neighbor_idx]}')
+                    shape = self.batch_shapes[self.batch[i]] if self.rect else self.img_size
+                    img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                    if offset == 0:
+                        base_ratio, base_pad, base_shape = ratio, pad, (h, w)
+                        base_shapes = ((h0, w0), ((h / h0, w / w0), pad))
+                    # Convert image: from BGR to RGB then from HWC to CHW.
+                    img = img[:, :, ::-1].transpose(2, 0, 1)
+                    stack.append(img.copy())
+                # Concatenate along the channel dimension (stacking frames)
+                stacked_img = np.concatenate(stack, axis=0)  # shape: (n_frames*3, H, W)
+                self.pre_stacked[i] = stacked_img
+
+                # Adjust labels using the central frame parameters:
+                adjusted = xywhn2xyxy(orig_labels[:, 1:], base_ratio[0] * base_shape[1], base_ratio[1] * base_shape[0],
+                                      padw=base_pad[0], padh=base_pad[1])
+                new_labels_xyxy = orig_labels.copy()
+                new_labels_xyxy[:, 1:] = adjusted
+
+                self.pre_stacked_labels_xyxy[i] = new_labels_xyxy
+                new_labels_xywh = orig_labels.copy()
+                new_labels_xywh[:, 1:5] = xyxy2xywh(new_labels_xyxy[:, 1:5])
+                self.pre_stacked_labels_xywh[i] = new_labels_xywh
+
+                # Save shape information as in the original: ((h0, w0), ((h/h0, w/w0), pad))
+                self.pre_stacked_shapes[i] = base_shapes
+                if os.environ["flag_to_profile_time"]:
+                    end = time.perf_counter()
+                    print(f"Time elapsed for stacking images: {end - start:.6f} seconds")
+            # else:
+            #     self.pre_stacked[i] = None
+            #     self.pre_stacked_labels[i] = None
+            #     self.pre_stacked_shapes[i] = None
+
+
+        # Remove samples for which stacking was not done (i.e. labels were empty).
+        valid_idxs = [i for i, v in enumerate(self.pre_stacked) if v is not None]
+        self.pre_stacked = [self.pre_stacked[i] for i in valid_idxs]
+        self.pre_stacked_labels_xyxy = [self.pre_stacked_labels_xyxy[i] for i in valid_idxs]
+        self.pre_stacked_labels_xywh = [self.pre_stacked_labels_xywh[i] for i in valid_idxs]
+        self.pre_stacked_shapes = [self.pre_stacked_shapes[i] for i in valid_idxs]
+        self.img_files = [self.img_files[i] for i in valid_idxs]
+        self.label_files = [self.label_files[i] for i in valid_idxs]
+        self.labels = [self.labels[i] for i in valid_idxs]
+        self.shapes = np.array([self.shapes[i] for i in valid_idxs])
+        self.indices = list(range(len(valid_idxs)))
+        self.n = len(valid_idxs)
+        print(f"Pre-stacking complete. {self.n} samples available for training.")
+
+    def __getitem__(self, index):
+        # Retrieve precomputed stacked image, labels, and shape.
+        stacked_img = self.pre_stacked[index]  # shape: (n_frames*3, H, W)
+        labels = self.pre_stacked_labels_xywh[index]
+        labels_xyxy = self.pre_stacked_labels_xyxy[index]
+        shapes = self.pre_stacked_shapes[index]  # ((h0, w0), ((h/h0, w/w0), pad))
+
+        # Convert to torch tensor (keep stacked_img as NumPy array for now if no augmentation is needed)
+        # If augmentation is enabled, we perform it below.
+        if self.augment:
+            if os.environ["flag_to_profile_time"]:
+                start = time.perf_counter()
+            # Convert stacked image from CHW to HWC for augmentation functions.
+            img_hwc = stacked_img.transpose(1, 2, 0).copy()
+            # Apply random perspective with dynamic border:
+            # (Assuming original random_perspective returns (augmented_img, updated_labels))
+
+            img_hwc, labels_xyxy = random_perspective(img_hwc, labels_xyxy, degrees=self.hyp['degrees'],
+                                                         translate=self.hyp['translate'], scale=self.hyp['scale'],
+                                                         shear=self.hyp['shear'], perspective=self.hyp['perspective'])
+            # Apply color augmentation to the stacked image: use our augment_hsv_stacked wrapper.
+            img_hwc = augment_hsv_stacked(img_hwc, hgain=self.hyp['hsv_h'], sgain=self.hyp['hsv_s'],
+                                          vgain=self.hyp['hsv_v'])
+            labels[:, 1:5] = xyxy2xywh(labels_xyxy[:, 1:5])  # convert xyxy to xywh
+            labels[:, [2, 4]] /= stacked_img.shape[1]  # normalized height 0-1
+            labels[:, [1, 3]] /= stacked_img.shape[2]  # normalized width 0-1
+            # Apply vertical flip with probability hyp['flipud']
+            if random.random() < self.hyp['flipud']:
+                img_hwc = np.flipud(img_hwc)
+                if labels.size:
+                    labels[:, 2] = 1 - labels[:, 2]
+            # Apply horizontal flip with probability hyp['fliplr']
+            if random.random() < self.hyp['fliplr']:
+                img_hwc = np.fliplr(img_hwc)
+                if labels.size:
+                    labels[:, 1] = 1 - labels[:, 1]
+            # Convert image HWC back to CHW
+            stacked_img = img_hwc.transpose(2, 0, 1)
+            if os.environ["flag_to_profile_time"]:
+                end = time.perf_counter()
+                print(f"Time elapsed for augment: {end - start:.6f} seconds")
+        else:
+            labels[:, [2, 4]] /= stacked_img.shape[1]  # normalized height 0-1
+            labels[:, [1, 3]] /= stacked_img.shape[2]  # normalized width 0-1
+        labels_out = torch.zeros((len(labels), 6))
+        labels_out[:, 1:] = torch.from_numpy(labels)
+
+
+        return torch.from_numpy(stacked_img), labels_out, self.img_files[index], shapes
 
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
@@ -1157,9 +1381,11 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            # img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114) * (img.shape[2] // 3))
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            # img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114) * (img.shape[2] // 3))
 
     # Visualize
     # import matplotlib.pyplot as plt
