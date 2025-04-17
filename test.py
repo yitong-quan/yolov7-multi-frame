@@ -16,6 +16,8 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
+if os.environ["DEBUGGING"]:
+    from torchvision.utils import save_image as tv_save_image
 
 
 def test(data,
@@ -34,13 +36,14 @@ def test(data,
          save_txt=False,  # for auto-labelling
          save_hybrid=False,  # for hybrid auto-labelling
          save_conf=False,  # save auto-label confidences
-         plots=True,
+         plots=False,  # True,
          wandb_logger=None,
          compute_loss=None,
          half_precision=True,
          trace=False,
          is_coco=False,
-         v5_metric=False):
+         v5_metric=False,
+         n_frames=1):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -85,10 +88,11 @@ def test(data,
     # Dataloader
     if not training:
         if device.type != 'cpu':
-            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            # model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            model(torch.zeros(1, 3*n_frames, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
-                                       prefix=colorstr(f'{task}: '))[0]
+                                       prefix=colorstr(f'{task}: '), n_frames=n_frames)[0]
 
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
@@ -102,7 +106,9 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
-        if torch.all(targets == 0) : continue
+        if torch.all(targets == 0) :
+            print('>>> In test, torch.all(targets == 0)')
+            continue
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -111,6 +117,19 @@ def test(data,
 
         with torch.no_grad():
             # Run model
+            if os.environ["DEBUGGING"]:
+                # save unstacked images
+                val_f_base_name = os.path.splitext(os.path.basename(os.path.basename(paths[0])))[0]
+                # Split and save unstacked images
+                imgs_split = img[0]
+                for i_val_f_base_name in range(imgs_split.shape[0] // 3):  # current only debug for batch size of 1
+                    img_split = imgs_split[
+                                i_val_f_base_name * 3:(i_val_f_base_name + 1) * 3]  # shape [3, 1920, 1920]
+                    test_val_set = 'val' if 'val' in paths[0] else 'test'
+                    save_path = os.path.join(f'/tmp/debug_folder/{test_val_set}',
+                                             f"{val_f_base_name}-{imgs_split.shape[0] // 3 - i_val_f_base_name - 1}.png")
+                    tv_save_image(img_split, save_path)
+                    print(f"Saved: {save_path}")
             t = time_synchronized()
             out, train_out = model(img, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
@@ -316,6 +335,7 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
@@ -337,7 +357,8 @@ if __name__ == '__main__':
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
              trace=not opt.no_trace,
-             v5_metric=opt.v5_metric
+             v5_metric=opt.v5_metric,
+             n_frames=opt.n_frames
              )
 
     elif opt.task == 'speed':  # speed benchmarks
