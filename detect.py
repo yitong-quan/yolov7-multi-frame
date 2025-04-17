@@ -6,6 +6,7 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
+import numpy as np
 
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
@@ -62,12 +63,48 @@ def detect(save_img=False):
 
     # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        if model.model[0].conv.in_channels == 3:
+            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        else:
+            print(f"run once with {model.model[0].conv.in_channels}-frames-model for detection.")
+            model(torch.zeros(1, model.model[0].conv.in_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
 
+    # Initialize a frame buffer to store the last n frames
+    frame_buffer = []
+    # Determine number of frames expected from model input
+    nframes = model.model[0].conv.in_channels // 3  # e.g., if the model has 9 input channels, then nframes = 3
+
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
+
+        # for n-frames model
+        if not model.model[0].conv.in_channels == 3:
+            # 'img' is loaded from the dataset as one frame; typically shape [H, W, 3] in BGR.
+            # Append a copy of the current frame to the buffer.
+            frame_buffer.append(img.copy())
+            # If we don't have enough frames yet, continue to next iteration.
+            if len(frame_buffer) < nframes:
+                continue  # wait until buffer has nframes
+            # Otherwise, pick the last nframes from the buffer.
+            frames_to_stack = frame_buffer[-nframes:]
+            # Process each frame: convert from BGR to RGB and transpose to channel-first.
+            # Note: If your loader already converts to RGB, so no need to use f[:, :, ::-1].transpose(2, 0, 1).
+            processed_frames = [f for f in frames_to_stack]  # each: [3, H, W]
+            # Check if all frames in frames_to_stack have the same spatial dimensions (height, width)
+            spatial_shapes = [f.shape[-2:] for f in frames_to_stack]  # f.shape returns (3, H, W)
+            if len(set(spatial_shapes)) > 1:
+                print(f">>> Warning: Inconsistent spatial dimensions in frame buffer. Clearing buffer and skipping current iteration. Current image path is {path}")
+                frame_buffer = [frame_buffer[-1]]  # Clean the buffer
+                continue
+            # Stack frames along the channel axis → final shape [nframes*3, H, W]
+            stacked_img = np.concatenate(processed_frames, axis=-3)
+            img = stacked_img
+            # Optionally, update buffer (e.g., keep buffer size fixed)
+            if len(frame_buffer) > nframes:
+                frame_buffer.pop(0)
+
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
