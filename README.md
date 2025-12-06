@@ -21,7 +21,8 @@ This repo turns single-frame YOLOv7/YOLOv7-tiny into a **multi-frame** detector 
 
 ## 2) Method overview
 
-**Goal.** Use *n* consecutive frames {\(I_{t-n+1}, …, I_t\)} as input but predict detections **only for \(I_t\)**. This injects temporal cues at the pixel level without heavy temporal modules (RNNs/flow/attention).
+**Goal.** Use *n* consecutive frames {I<sub>t−n+1</sub>, …, I<sub>t</sub>} as input, but predict detections **only for I<sub>t</sub>**.
+This injects temporal cues at the pixel level without heavy temporal modules (RNNs/flow/attention).
 
 ### 2.1 Early Fusion (EF-Multi)
 - Change the first conv to accept `3n` input channels.
@@ -111,9 +112,6 @@ Notes:
 ## 6) Validation / Testing
 
 ```bash
-python test.py --data <your.yaml> --weights <ckpt>.pt --img-size 640 \
-  --batch-size 8 --n-frames 3 --task val
-
 python test.py \
  --data data/your_dataset_meta.yaml \ 
  --conf 0.001 \ --iou 0.65  \
