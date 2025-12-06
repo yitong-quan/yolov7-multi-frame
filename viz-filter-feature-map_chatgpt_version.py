@@ -157,7 +157,7 @@ def main(args):
         transforms.ToTensor()])
     img_tensor = transform(img).unsqueeze(0).to(device) # .half()
     img_tensor_1Frames = img_tensor.clone().half()
-    img_tensor = img_tensor.repeat(1, 3, 1, 1)
+    img_tensor = img_tensor.repeat(1, 3, 1, 1)  # Repeat single-frame tensor to 3-frame channels while preserving a half-precision 1-frame copy for baseline comparison.
 
     # Register hooks
     feature_maps = []
@@ -176,7 +176,7 @@ def main(args):
         register_hooks(model_1Frames, feature_maps_1Frames)
         # Forward pass
         with torch.no_grad():
-            model_1Frames(img_tensor_1Frames)
+            model_1Frames(img_tensor_1Frames)  # Optional comparison: run a 1-frame YOLOv7-tiny model to juxtapose feature maps against the multi-frame variant.
 
     # Visualize
     visualize_feature_maps(feature_maps, args.out)
@@ -187,6 +187,6 @@ if __name__ == "__main__":
     parser.add_argument('--model', required=True, help='Path to YOLOv7 .pt model')
     parser.add_argument('--image', required=True, help='Path to input image')
     parser.add_argument('--out', default='feature_maps', help='Output folder')
-    parser.add_argument('--n-frames', default='1', help='number of frames feed in as a tensor')
+    parser.add_argument('--n-frames', default='1', help='number of frames feed in as a tensor')  # CLI flag documenting how many frames are fed into the visualization tensor.
     args = parser.parse_args()
     main(args)

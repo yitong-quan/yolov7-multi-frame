@@ -6,7 +6,7 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
-import numpy as np
+import numpy as np  # NumPy needed to concat buffered frames into a multi-channel tensor.
 
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
@@ -67,7 +67,7 @@ def detect(save_img=False):
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         else:
             print(f"run once with {model.model[0].conv.in_channels}-frames-model for detection.")
-            model(torch.zeros(1, model.model[0].conv.in_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            model(torch.zeros(1, model.model[0].conv.in_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once  # Warm up with correct input channels (3 or 3*n) so multi-frame weights don’t shape-mismatch on first forward.
     old_img_w = old_img_h = imgsz
     old_img_b = 1
 
@@ -100,7 +100,7 @@ def detect(save_img=False):
                 continue
             # Stack frames along the channel axis → final shape [nframes*3, H, W]
             stacked_img = np.concatenate(processed_frames, axis=-3)
-            img = stacked_img
+            img = stacked_img  # Buffer last n frames, stack along channels (3*n), and skip until buffer is full; clears buffer if spatial dims drift to keep tensor shapes valid.
             # Optionally, update buffer (e.g., keep buffer size fixed)
             if len(frame_buffer) > nframes:
                 frame_buffer.pop(0)

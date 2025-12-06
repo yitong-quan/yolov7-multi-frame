@@ -1,0 +1,10 @@
+#yaml file for YOLOv7 format dataset
+
+train: {PATH_TO_TRAIN_SET}
+val: {PATH_TO_VAL_SET}
+test: {PATH_TO_TEST_SET}
+
+# Classes
+nc: 1  # number of classes
+names: ['person']  # class names
+

@@ -1,4 +1,5 @@
-lr0: 0.01  # initial learning rate (SGD=1E-2, Adam=1E-3)
+# Lower LR to 0.005 to stabilize optimization on the manual Ulm set.
+lr0: 0.005  # 1  # initial learning rate (SGD=1E-2, Adam=1E-3)
 lrf: 0.1  # final OneCycleLR learning rate (lr0 * lrf)
 momentum: 0.937  # SGD momentum/Adam beta1
 weight_decay: 0.0005  # optimizer weight decay 5e-4
@@ -14,6 +15,7 @@ iou_t: 0.20  # IoU training threshold
 anchor_t: 4.0  # anchor-multiple threshold
 # anchors: 3  # anchors per output layer (0 to ignore)
 fl_gamma: 0.0  # focal loss gamma (efficientDet default gamma=1.5)
+# Disable color/geom aug and mosaic to preserve temporal coherence of stacked frames.
 hsv_h: 0.0 # 0.015  # image HSV-Hue augmentation (fraction)
 hsv_s: 0.0 # 0.7  # image HSV-Saturation augmentation (fraction)
 hsv_v: 0.0 # 0.4  # image HSV-Value augmentation (fraction)
@@ -28,4 +30,5 @@ mosaic: 0 # 1.0  # image mosaic (probability)
 mixup: 0.0  # image mixup (probability)
 copy_paste: 0.0  # image copy paste (probability)
 paste_in: 0.0  # image copy paste (probability), use 0 for faster training
+# Use standard YOLOv7 loss (OTA off) for this study.
 loss_ota: 0 # use ComputeLossOTA, use 0 for faster training

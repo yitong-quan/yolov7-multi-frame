@@ -34,7 +34,7 @@ from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
-if os.environ["DEBUGGING"]:
+if os.environ.get("DEBUGGING", "False").lower() == "true":
     from torchvision.utils import save_image as tv_save_image
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def train(hyp, opt, device, tb_writer=None):
         if opt.n_frames is None:
             model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         else:
-            model = Model(opt.cfg or ckpt['model'].yaml, ch=3*opt.n_frames, nc=nc, anchors=hyp.get('anchors')).to(device) # for n_frames
+            model = Model(opt.cfg or ckpt['model'].yaml, ch=3*opt.n_frames, nc=nc, anchors=hyp.get('anchors')).to(device) # for n_frames  # Instantiate model with 3*n input channels when n_frames is set; keeps 3-channel path for single-frame training.
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
@@ -100,7 +100,7 @@ def train(hyp, opt, device, tb_writer=None):
         if opt.n_frames is None:
             model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         else:
-            model = Model(opt.cfg, ch=3*opt.n_frames, nc=nc, anchors=hyp.get('anchors')).to(device) # for n_frames
+            model = Model(opt.cfg, ch=3*opt.n_frames, nc=nc, anchors=hyp.get('anchors')).to(device) # for n_frames  # Instantiate model with 3*n input channels when n_frames is set; keeps 3-channel path for single-frame training.
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
@@ -254,7 +254,7 @@ def train(hyp, opt, device, tb_writer=None):
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
-                                            n_frames=opt.n_frames)
+                                            n_frames=opt.n_frames)  # Train/val dataloaders receive n_frames so each sample is a stacked clip instead of a single image.
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -265,7 +265,7 @@ def train(hyp, opt, device, tb_writer=None):
                                        gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
-                                       pad=0.5, prefix=colorstr('val: '), n_frames=opt.n_frames)[0]
+                                       pad=0.5, prefix=colorstr('val: '), n_frames=opt.n_frames)[0]  # Train/val dataloaders receive n_frames so each sample is a stacked clip instead of a single image.
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -346,8 +346,8 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             if torch.all(targets == 0) :
-                print('>>> In train, torch.all(targets == 0)')
-                continue
+                # print('>>> In train, torch.all(targets == 0)')
+                continue  # Skip batches whose labels are all zero to avoid wasted steps on padding artifacts.
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
@@ -372,16 +372,16 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
-                if os.environ["DEBUGGING"]:
+                if os.environ.get("DEBUGGING", "False").lower() == "true":
                     # save unstacked images
                     train_f_base_name = os.path.splitext(os.path.basename(os.path.basename(paths[0])))[0]
                     # Split and save unstacked images
                     imgs_split = imgs[0]
                     for i_train_f_base_name in range(imgs_split.shape[0]//3):  # current only debug for batch size of 1
                         img_split = imgs_split[i_train_f_base_name * 3:(i_train_f_base_name + 1) * 3]  # shape [3, 1920, 1920]
-                        save_path = os.path.join('/tmp/debug_folder/train', f"{train_f_base_name}-{imgs_split.shape[0]//3 -i_train_f_base_name-1}.png")
+                        save_path = os.path.join('/data/quan/tmp/debug_folder/train', f"{train_f_base_name}-{imgs_split.shape[0]//3 -i_train_f_base_name-1}.png")
                         tv_save_image(img_split, save_path)
-                        print(f"Saved: {save_path}")
+                        print(f"Saved: {save_path}")  # Debug option: split stacked tensor into per-frame PNGs to verify ordering/channel stacking during training.
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
@@ -415,7 +415,7 @@ def train(hyp, opt, device, tb_writer=None):
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     # Thread(target=plot_images, args=(imgs[:, -3:, :, :], targets, paths, f), daemon=True).start()
-                    Thread(target=plot_images, args=(imgs[:, [-7, -4, -1], :, :], targets, paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs[:, [-1, -4, -7], :, :], targets, paths, f), daemon=True).start()  # Plot overlays on selected latest-frame channels to see boxes on the most recent frame of the stack.
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph
@@ -438,7 +438,7 @@ def train(hyp, opt, device, tb_writer=None):
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
                 results, maps, times = test.test(data_dict,
-                                                 batch_size=batch_size, # batch_size=batch_size * 2,
+                                                 batch_size=batch_size * 2, # batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
                                                  model=ema.ema,
                                                  single_cls=opt.single_cls,
@@ -450,7 +450,7 @@ def train(hyp, opt, device, tb_writer=None):
                                                  compute_loss=compute_loss,
                                                  is_coco=is_coco,
                                                  v5_metric=opt.v5_metric,
-                                                 n_frames=opt.n_frames)
+                                                 n_frames=opt.n_frames)  # Validation uses the same n_frames multi-frame input format as training.
 
             # Write
             with open(results_file, 'a') as f:
@@ -531,7 +531,7 @@ def train(hyp, opt, device, tb_writer=None):
                                           plots=False,
                                           is_coco=is_coco,
                                           v5_metric=opt.v5_metric,
-                                          n_frames=opt.n_frames)
+                                          n_frames=opt.n_frames)  # Validation/test paths forward n_frames so eval matches the multi-frame training input format.
 
         # Strip optimizers
         final = best if best.exists() else last  # final model
@@ -589,7 +589,7 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
-    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')
+    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')  # Expose n_frames via CLI to control channel stacking during train/val.
     opt = parser.parse_args()
 
     # Set DDP variables

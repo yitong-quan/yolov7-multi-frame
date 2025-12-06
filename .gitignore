@@ -261,3 +261,14 @@ com_crashlytics_export_strings.xml
 crashlytics.properties
 crashlytics-build.properties
 fabric.properties
+
+# temporalfiles
+different_to_origi.txt
+/runs
+yolov7-tiny-3frames_group3_for_1st_layer.pt_bk
+yolov7-tiny-3frames_group3_for_1st_layer.pt_olc
+yolov7-tiny-7frames_group3_for_1st_layer.pt_bk
+yolov7-tiny-7frames_group3_for_1st_layer.pt_olc
+
+
+

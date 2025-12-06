@@ -16,8 +16,8 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
-if os.environ["DEBUGGING"]:
-    from torchvision.utils import save_image as tv_save_image
+if os.environ.get("DEBUGGING", "False").lower() == "true":
+    from torchvision.utils import save_image as tv_save_image  # Optional debug: save per-frame PNGs from stacked tensors when DEBUGGING=true.
 
 
 def test(data,
@@ -36,7 +36,7 @@ def test(data,
          save_txt=False,  # for auto-labelling
          save_hybrid=False,  # for hybrid auto-labelling
          save_conf=False,  # save auto-label confidences
-         plots=False,  # True,
+         plots=False,  # Default plots off to speed multi-frame eval; re-enable if visual checks are needed.
          wandb_logger=None,
          compute_loss=None,
          half_precision=True,
@@ -89,10 +89,10 @@ def test(data,
     if not training:
         if device.type != 'cpu':
             # model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-            model(torch.zeros(1, 3*n_frames, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            model(torch.zeros(1, 3*n_frames, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once  # Accept n_frames and warm up with 3*n input channels; dataloader builds stacked clips.
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
-                                       prefix=colorstr(f'{task}: '), n_frames=n_frames)[0]
+                                       prefix=colorstr(f'{task}: '), n_frames=n_frames)[0]  # Accept n_frames and warm up with 3*n input channels; dataloader builds stacked clips.
 
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
@@ -107,8 +107,8 @@ def test(data,
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         if torch.all(targets == 0) :
-            print('>>> In test, torch.all(targets == 0)')
-            continue
+            # print('>>> In test, torch.all(targets == 0)')
+            continue  # Skip batches with all-zero targets (likely padding) to avoid skewing metrics.
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -117,7 +117,7 @@ def test(data,
 
         with torch.no_grad():
             # Run model
-            if os.environ["DEBUGGING"]:
+            if os.environ.get("DEBUGGING", "False").lower() == "true":
                 # save unstacked images
                 val_f_base_name = os.path.splitext(os.path.basename(os.path.basename(paths[0])))[0]
                 # Split and save unstacked images
@@ -126,10 +126,10 @@ def test(data,
                     img_split = imgs_split[
                                 i_val_f_base_name * 3:(i_val_f_base_name + 1) * 3]  # shape [3, 1920, 1920]
                     test_val_set = 'val' if 'val' in paths[0] else 'test'
-                    save_path = os.path.join(f'/tmp/debug_folder/{test_val_set}',
+                    save_path = os.path.join(f'/data/quan/tmp/debug_folder/{test_val_set}',
                                              f"{val_f_base_name}-{imgs_split.shape[0] // 3 - i_val_f_base_name - 1}.png")
                     tv_save_image(img_split, save_path)
-                    print(f"Saved: {save_path}")
+                    print(f"Saved: {save_path}")  # Debug hook: unstack multi-frame tensor and save each frame to inspect ordering/channel layout.
             t = time_synchronized()
             out, train_out = model(img, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
@@ -140,6 +140,7 @@ def test(data,
 
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
+            # print(f'targets[0:2, :]: \n{targets[0:2, :]}')  # Scale targets for stacked inputs; optional print for inspecting label scaling.
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
@@ -181,11 +182,11 @@ def test(data,
                                  "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
                     boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
                     # If the image has 9 channels of 3 frames, take only the last 3 channels (latest frame)
-                    if img[si].shape[0] == 9:
+                    if img[si].shape[0] > 3:
                         img_display = img[si][-3:, ...]
                     else:
                         img_display = img[si]
-                    wandb_images.append(wandb_logger.wandb.Image(img_display, boxes=boxes, caption=path.name))
+                    wandb_images.append(wandb_logger.wandb.Image(img_display, boxes=boxes, caption=path.name))  # When logging to W&B, show only latest frame (last 3 channels) so boxes align with the most recent view.
             wandb_logger.log_training_progress(predn, path, names) if wandb_logger and wandb_logger.wandb_run else None
 
             # Append to pycocotools JSON dictionary
@@ -237,12 +238,12 @@ def test(data,
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images
-        if plots and batch_i < 3:
+        if plots and batch_i < 15:
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             # Thread(target=plot_images, args=(img[:,-3:,:,:], targets, paths, f, names), daemon=True).start()
-            Thread(target=plot_images, args=(img[:, [-7, -4, -1], :, :], targets, paths, f, names), daemon=True).start()
+            Thread(target=plot_images, args=(img[:, [-7, -4, -1], :, :], targets, paths, f), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
-            Thread(target=plot_images, args=(img[:,[-7, -4, -1],:,:], output_to_target(out), paths, f, names), daemon=True).start()
+            Thread(target=plot_images, args=(img[:,[-1, -4, -7],:,:], output_to_target(out), paths, f), daemon=True).start()  # Plot using selected latest-frame channels to visualize predictions on the most recent frame in the stack.
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
@@ -253,6 +254,7 @@ def test(data,
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
+        print('>>>len(stats): ', len(stats), ' stats[0].any(): ', stats[0].any(), ' t = torch.zeros(1)')
 
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 4  # print format
@@ -335,7 +337,7 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
-    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')
+    parser.add_argument('--n-frames', type=int, default=3, help='numbers of frames to concatenation as a data sample')  # CLI knob to choose how many frames are concatenated per sample.
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
