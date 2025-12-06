@@ -141,7 +141,76 @@ python test.py \
 
 ---
 
-## 10) Citation
+## 10) Checkpoints
+
+We release multiple pretrained YOLOv7 and YOLOv7-tiny checkpoints corresponding to different
+multi-frame settings and fusion strategies evaluated during development.
+
+### Naming convention
+
+Checkpoint filenames follow the pattern:
+
+- `yolov7[-tiny]-<N>frames.pt`  
+  → Early Fusion (default): stacked frames are fused from the first convolution layer.
+
+- `*_group3_for_1st_layer.pt`  
+  → Late Fusion (Grouped Convolution): the first convolution layer uses `groups = N`,
+    so each frame is processed independently before feature fusion.
+
+
+---
+
+
+#### ✅ Single-frame baseline
+- [**`yolov7-tiny.pt`**](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny.pt)  
+  Standard single-frame YOLOv7-tiny baseline.
+
+---
+#### ✅ Multi-frame Early Fusion (recommended)
+
+These models use **Early Fusion**, where stacked RGB frames (`3 × N` channels) are fused
+directly in the first convolution layer.
+
+- [`yolov7-tiny-3frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-3frames.pt)
+- [`yolov7-tiny-4frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-4frames.pt)
+- [`yolov7-tiny-5frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-5frames.pt)
+- [`yolov7-tiny-7frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-7frames.pt)
+- [`yolov7-tiny-9frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-9frames.pt)
+
+- [`yolov7-3frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-3frames.pt)
+- [`yolov7-5frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-5frames.pt)
+- [`yolov7-7frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-7frames.pt)
+- [`yolov7-9frames.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-9frames.pt)
+
+These checkpoints correspond to different numbers of stacked consecutive frames (*N*),
+and are useful to study the trade-off between temporal context and efficiency.
+
+---
+
+#### 🧪 Late Fusion / Grouped Convolution (ablation)
+
+The following checkpoints implement **Grouped Convolution in the first layer**
+(`groups = N`), such that each frame is processed independently before later fusion.
+As shown in the paper, this design generally yields lower accuracy than Early Fusion,
+but is provided for completeness and analysis.
+
+- [`yolov7-tiny-3frames_group3_for_1st_layer.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-7frames_group3_for_1st_layer.pt)
+- [`yolov7-tiny-7frames_group3_for_1st_layer.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-tiny-7frames_group3_for_1st_layer.pt)
+- [`yolov7-3frames_group3_for_1st_layer.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-3frames_group3_for_1st_layer.pt)
+- [`yolov7-5frames_group3_for_1st_layer.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-5frames_group3_for_1st_layer.pt)
+- [`yolov7-7frames_group3_for_1st_layer.pt`](https://github.com/yitong-quan/yolov7-multi-frame/releases/download/checkpoints/yolov7-7frames_group3_for_1st_layer.pt)
+
+
+---
+
+### Usage note
+
+All multi-frame checkpoints expect **stacked RGB inputs** (`3 × N` channels).
+Please ensure that the model configuration and dataloader are initialized with the
+**correct number of frames (`--n-frames N`)** during inference and evaluation.
+
+
+## 11) Citation
 
 If you use this repo, please cite:
 
@@ -150,11 +219,8 @@ If you use this repo, please cite:
 
 ---
 
-## 11) Acknowledgments
+## 12) Acknowledgments
 This work is built upon the official [YOLOv7](https://github.com/WongKinYiu/yolov7) repository by Wang et al.
 We thank the authors for making their code publicly available.
 The original YOLOv7 codebase is distributed under the GPL-3.0 license, which this repository follows.
-
-
-
 
