@@ -1,4 +1,4 @@
-# please run with '$ python viz-filter-feature-map_chatgpt_version.py --model yolov7.pt --image inference/images/image2.jpg --out run/output_maps'
+# please run with '$ python viz-filter-feature-map.py --model yolov7.pt --image inference/images/image2.jpg --out run/output_maps'
 
 import torch
 import cv2
